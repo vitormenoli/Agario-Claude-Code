@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agar.io Clone</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#111; overflow:hidden; font-family:Arial,sans-serif; }
+canvas { display:block; }
+#hud {
+    position:fixed; top:12px; left:12px; color:white;
+    font-size:18px; font-weight:bold;
+    text-shadow:1px 1px 3px rgba(0,0,0,0.9);
+    z-index:10; pointer-events:none; line-height:1.6;
+}
+#hud .sub { font-size:13px; color:#ccc; }
+#hud .rec { font-size:13px; color:#ffd700; }
+#leaderboard {
+    position:fixed; top:12px; right:12px;
+    background:rgba(0,0,0,0.55); color:white;
+    padding:10px 14px; border-radius:10px;
+    font-size:14px; min-width:160px; z-index:10;
+    backdrop-filter:blur(4px);
+}
+#leaderboard h3 { text-align:center; margin-bottom:6px; color:#ffd700; font-size:15px; }
+.lb-entry { display:flex; justify-content:space-between; padding:2px 0; gap:12px; }
+.lb-entry.me { color:#ffd700; font-weight:bold; }
+#controls {
+    position:fixed; bottom:12px; right:12px;
+    background:rgba(0,0,0,0.45); color:#ccc;
+    padding:8px 12px; border-radius:8px;
+    font-size:12px; z-index:10; line-height:1.7;
+}
+#start-screen,#death-screen {
+    position:fixed; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; z-index:20; color:white;
+}
+#start-screen { background:rgba(10,10,30,0.92); }
+#start-screen h1 { font-size:64px; color:#4caf50; text-shadow:0 0 30px #4caf5088; margin-bottom:8px; }
+#start-screen p { color:#aaa; margin-bottom:6px; font-size:14px; text-align:center; max-width:420px; line-height:1.6; }
+#start-screen input {
+    padding:10px 20px; font-size:18px; border-radius:8px;
+    border:2px solid #4caf50; background:#1a1a2e; color:white;
+    text-align:center; margin:10px 0; outline:none; width:220px;
+}
+#start-screen input:focus { border-color:#80e080; }
+.btn {
+    padding:12px 36px; font-size:18px; font-weight:bold;
+    background:#4caf50; color:white; border:none;
+    border-radius:8px; cursor:pointer; transition:background 0.2s;
+}
+.btn:hover { background:#45a049; }
+#death-screen { background:rgba(0,0,0,0.80); display:none; }
+#death-screen h2 { font-size:50px; color:#ff5555; margin-bottom:10px; }
+#death-screen p { font-size:18px; color:#ccc; margin-bottom:6px; }
+#death-screen strong { color:#ffd700; }
+#death-screen .record-msg { font-size:20px; margin:8px 0 16px; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="hud">
+    <div>Tamanho: <span id="score">0</span><span id="pieces-info" class="sub"></span></div>
+    <div class="rec" id="rec-hud"></div>
+</div>
+
+<div id="leaderboard">
+    <h3>🏆 Placar</h3>
+    <div id="lb-list"></div>
+</div>
+
+<div id="controls">
+    🖱️ Mouse — mover<br>
+    Space — dividir<br>
+    W — ejetar massa
+</div>
+
+<div id="start-screen">
+    <h1>Agar.io</h1>
+    <p>
+        Mova o mouse para controlar sua célula.<br>
+        Coma bolinhas e células menores para crescer!<br>
+        <span style="color:#55dd55">🦠 Vírus verde: divide células grandes. Pequenas se escondem dentro!</span><br>
+        <span style="color:#ff6666">🔴 Spike vermelho: gera comida ao redor.</span>
+    </p>
+    <input type="text" id="player-name" placeholder="Seu nome" maxlength="15" value="Jogador">
+    <button class="btn" onclick="startGame()">▶ Jogar</button>
+</div>
+
+<div id="death-screen">
+    <h2>Você foi comido!</h2>
+    <p>Tamanho final: <strong id="final-score"></strong></p>
+    <div class="record-msg" id="record-msg"></div>
+    <button class="btn" onclick="restartGame()">↺ Jogar Novamente</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+
+// ── Constants ──
+const WORLD_W        = 6000;
+const WORLD_H        = 6000;
+const GRID_SZ        = 120;
+const FOOD_CNT       = 3000;
+const BOT_CNT        = 100;
+const VIRUS_CNT      = 25;
+const RSPIKE_CNT     = 10;
+const VIRUS_R        = 30;
+const VIRUS_SPLIT_R  = 33;   // pieces with r > this get burst by viruses
+const MAX_PIECES     = 16;
+const MIN_SPLIT_MASS = 140;  // piece needs ≥ this to split (each half = 70)
+const MERGE_FRAMES   = 900;  // ~15s at 60fps
+const SPLIT_SPD      = 12;
+const EJECT_MASS_AMT = 16;
+const EJECT_SPD      = 14;
+const EJECT_CD       = 8;
+const SPLIT_CD       = 5;
+
+const COLORS = [
+    '#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c',
+    '#3498db','#9b59b6','#e91e63','#00bcd4','#8bc34a',
+    '#ff6b6b','#4ecdc4','#45b7d1','#96ceb4','#ffeaa7',
+    '#dda0dd','#f39c12','#27ae60','#2980b9','#8e44ad'
+];
+const BOT_NAMES = [
+    'Alpha','Beta','Gama','Delta','Shadow','Titan','Nova',
+    'Nexus','Ghost','Storm','Blaze','Hydra','Omega','Sigma',
+    'Dark','Frost','Venom','Cyber','Pixel','Raptor'
+];
+
+// ── Globals ──
+let playerPieces = [], playerColor, playerNameStr;
+let food = [], bots = [], viruses = [], redSpikes = [];
+let cam, mouse, gameRunning, animId;
+let ejectCDTimer = 0, splitCDTimer = 0;
+let peakMass = 0, newRecordFlash = 0;
+let currentRecord = { mass: 0, date: '—' };
+let wKeyHeld = false;
+
+// ── Utils ──
+const rand   = (a, b) => Math.random() * (b - a) + a;
+const randI  = (a, b) => Math.floor(rand(a, b));
+const pick   = arr    => arr[randI(0, arr.length)];
+const dist2  = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+const dist   = (a, b) => Math.sqrt(dist2(a, b));
+const clamp  = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+const offScr = (sx, sy, sr) =>
+    sx + sr < -20 || sx - sr > canvas.width  + 20 ||
+    sy + sr < -20 || sy - sr > canvas.height + 20;
+
+function massToRadius(m) { return Math.sqrt(m) * 1.5; }
+
+function worldToScreen(wx, wy) {
+    return [
+        (wx - cam.x) * cam.zoom + canvas.width  * 0.5,
+        (wy - cam.y) * cam.zoom + canvas.height * 0.5
+    ];
+}
+
+function mouseWorld() {
+    return {
+        x: cam.x + (mouse.x - canvas.width  * 0.5) / cam.zoom,
+        y: cam.y + (mouse.y - canvas.height * 0.5) / cam.zoom
+    };
+}
+
+function playerCentroid() {
+    let cx = 0, cy = 0, tm = 0;
+    for (const p of playerPieces) { cx += p.x * p.mass; cy += p.y * p.mass; tm += p.mass; }
+    return { x: cx / tm, y: cy / tm, totalMass: tm };
+}
+
+// ── Cell base ──
+class Cell {
+    constructor(x, y, mass, color, name) {
+        this.x = x; this.y = y;
+        this.mass = mass; this.r = massToRadius(mass);
+        this.color = color; this.name = name || '';
+    }
+    get speed() { return Math.max(0.8, 3.2 * Math.pow(100 / this.mass, 0.35)); }
+    addMass(m) { this.mass += m; this.r = massToRadius(this.mass); }
+    canEat(other) {
+        return this.r > other.r * 1.15 && dist(this, other) < this.r + other.r * 0.4;
+    }
+    draw(showName = true) {
+        const [sx, sy] = worldToScreen(this.x, this.y);
+        const sr = this.r * cam.zoom;
+        if (offScr(sx, sy, sr)) return;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur  = Math.min(sr * 0.4, 14);
+        ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+        ctx.fillStyle = this.color; ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.lineWidth = Math.max(1.5, sr * 0.06); ctx.stroke();
+        if (showName && this.name && sr > 14) {
+            const fs = clamp(sr * 0.38, 9, 22);
+            ctx.font = `bold ${fs}px Arial`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+            ctx.strokeText(this.name, sx, sy);
+            ctx.fillStyle = 'white'; ctx.fillText(this.name, sx, sy);
+        }
+    }
+}
+
+// ── Player Piece ──
+class PlayerPiece extends Cell {
+    constructor(x, y, mass, color, name) {
+        super(x, y, mass, color, name);
+        this.vx = 0; this.vy = 0;
+        this.mergeTimer = 0;
+        this.virusCooldown = 0;
+    }
+}
+
+// ── Food ──
+class Food {
+    constructor(large) { this.respawn(large); }
+    respawn(large) {
+        this.x = rand(40, WORLD_W - 40); this.y = rand(40, WORLD_H - 40);
+        this.mass  = large ? rand(8, 24) : rand(1, 5);
+        this.r     = massToRadius(this.mass);
+        this.color = pick(COLORS);
+        this.vx = 0; this.vy = 0;
+        this.noEatTimer = 0; this.isEjected = false;
+    }
+    draw() {
+        const [sx, sy] = worldToScreen(this.x, this.y);
+        const sr = Math.max(2, this.r * cam.zoom);
+        if (offScr(sx, sy, sr)) return;
+        ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+        ctx.fillStyle = this.color; ctx.fill();
+    }
+}
+
+// ── Virus (green spiky) ──
+class Virus {
+    constructor() { this.x = rand(150, WORLD_W-150); this.y = rand(150, WORLD_H-150); this.r = VIRUS_R; this.flashFrames = 0; }
+    draw() {
+        const [sx, sy] = worldToScreen(this.x, this.y);
+        const sr = this.r * cam.zoom;
+        if (offScr(sx, sy, sr + 20)) return;
+        const OR = sr * 1.32, IR = sr * 0.82, S = 13;
+        ctx.save(); ctx.beginPath();
+        for (let i = 0; i < S * 2; i++) {
+            const a = (i * Math.PI) / S - Math.PI / 2;
+            const r = i % 2 === 0 ? OR : IR;
+            i === 0 ? ctx.moveTo(sx + Math.cos(a)*r, sy + Math.sin(a)*r)
+                    : ctx.lineTo(sx + Math.cos(a)*r, sy + Math.sin(a)*r);
+        }
+        ctx.closePath();
+        const fl = this.flashFrames > 0;
+        ctx.shadowColor = '#33dd33'; ctx.shadowBlur = fl ? 22 : 9;
+        ctx.fillStyle   = fl ? '#aaffaa' : '#2ec827'; ctx.fill();
+        ctx.shadowBlur  = 0; ctx.strokeStyle = '#1a7a17';
+        ctx.lineWidth   = Math.max(1.5, sr * 0.07); ctx.stroke();
+        ctx.restore();
+        if (this.flashFrames > 0) this.flashFrames--;
+    }
+}
+
+// ── Red Spike (food generator) ──
+class RedSpike {
+    constructor() {
+        this.x = rand(200, WORLD_W - 200); this.y = rand(200, WORLD_H - 200);
+        this.r = 28; this.spawnTimer = randI(0, 150);
+        this.SPAWN_INTERVAL = 150;
+        this.pulse = 0;
+    }
+    update() {
+        this.pulse = (this.pulse + 0.05) % (Math.PI * 2);
+        if (++this.spawnTimer >= this.SPAWN_INTERVAL) {
+            this.spawnTimer = 0;
+            for (let i = 0; i < 6; i++) {
+                const angle = rand(0, Math.PI * 2);
+                const r = rand(40, 120);
+                const f = new Food(false);
+                f.x = clamp(this.x + Math.cos(angle) * r, 20, WORLD_W - 20);
+                f.y = clamp(this.y + Math.sin(angle) * r, 20, WORLD_H - 20);
+                food.push(f);
+            }
+            if (food.length > FOOD_CNT + 500) food.splice(0, food.length - (FOOD_CNT + 300));
+        }
+    }
+    draw() {
+        const [sx, sy] = worldToScreen(this.x, this.y);
+        const sr = (this.r + Math.sin(this.pulse) * 1.5) * cam.zoom;
+        if (offScr(sx, sy, sr + 20)) return;
+        const OR = sr * 1.35, IR = sr * 0.78, S = 11;
+        ctx.save(); ctx.beginPath();
+        for (let i = 0; i < S * 2; i++) {
+            const a = (i * Math.PI) / S - Math.PI / 2;
+            const r = i % 2 === 0 ? OR : IR;
+            i === 0 ? ctx.moveTo(sx + Math.cos(a)*r, sy + Math.sin(a)*r)
+                    : ctx.lineTo(sx + Math.cos(a)*r, sy + Math.sin(a)*r);
+        }
+        ctx.closePath();
+        ctx.shadowColor = '#ff4444'; ctx.shadowBlur = 12;
+        ctx.fillStyle   = '#cc2222'; ctx.fill();
+        ctx.shadowBlur  = 0; ctx.strokeStyle = '#881111';
+        ctx.lineWidth   = Math.max(1.5, sr * 0.07); ctx.stroke();
+        ctx.fillStyle   = 'rgba(255,200,200,0.85)';
+        ctx.font        = `bold ${Math.max(9, sr * 0.32)}px Arial`;
+        ctx.textAlign   = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('+', sx, sy);
+        ctx.restore();
+    }
+}
+
+// ── Bot AI ──
+class Bot extends Cell {
+    constructor() {
+        const roll = Math.random();
+        const mass = roll < 0.35 ? rand(10, 60)      // pequenos
+                   : roll < 0.75 ? rand(60, 500)     // médios
+                   : rand(600, 2500);                 // grandes
+        super(rand(100, WORLD_W-100), rand(100, WORLD_H-100), mass, pick(COLORS), pick(BOT_NAMES));
+        this.tx = this.x; this.ty = this.y;
+        this.tickCD = 0; this.virusCooldown = 0;
+    }
+    think(allCells) {
+        if (--this.tickCD > 0) return;
+        this.tickCD = randI(18, 45);
+        let fleeTarget = null, fleeDist = Infinity;
+        let huntTarget = null, huntScore = -Infinity;
+        let bestFood   = null, bestFoodDist = Infinity;
+        if (this.r > VIRUS_SPLIT_R) {
+            for (const v of viruses) {
+                const d = dist(this, v);
+                if (d < this.r * 5 && d < fleeDist) { fleeTarget = v; fleeDist = d; }
+            }
+        }
+        for (const c of allCells) {
+            if (c === this) continue;
+            const d = dist(this, c);
+            if (c.r > this.r * 1.15 && d < this.r * 6 && d < fleeDist) { fleeTarget = c; fleeDist = d; }
+            if (this.r > c.r * 1.15 && d < this.r * 10) {
+                const sc = c.mass / (d + 1);
+                if (sc > huntScore) { huntTarget = c; huntScore = sc; }
+            }
+        }
+        if (fleeTarget) {
+            const dx = this.x - fleeTarget.x, dy = this.y - fleeTarget.y;
+            const d  = Math.sqrt(dx*dx + dy*dy) || 1;
+            this.tx  = clamp(this.x + dx/d * 450, 80, WORLD_W-80);
+            this.ty  = clamp(this.y + dy/d * 450, 80, WORLD_H-80);
+            return;
+        }
+        if (huntTarget) { this.tx = huntTarget.x; this.ty = huntTarget.y; return; }
+        for (const f of food) {
+            const d = dist(this, f);
+            if (d < bestFoodDist) { bestFood = f; bestFoodDist = d; }
+        }
+        if (bestFood && bestFoodDist < 500) { this.tx = bestFood.x; this.ty = bestFood.y; return; }
+        this.tx = rand(80, WORLD_W-80); this.ty = rand(80, WORLD_H-80);
+    }
+    move() {
+        const dx = this.tx - this.x, dy = this.ty - this.y;
+        const d  = Math.sqrt(dx*dx + dy*dy) || 1;
+        if (d > 2) { this.x += dx/d * this.speed; this.y += dy/d * this.speed; }
+        this.x = clamp(this.x, this.r, WORLD_W - this.r);
+        this.y = clamp(this.y, this.r, WORLD_H - this.r);
+    }
+}
+
+// ── Records ──
+function loadRecord()   {
+    return { mass: parseInt(localStorage.getItem('agario_best') || '0'),
+             date: localStorage.getItem('agario_best_date') || '—' };
+}
+function saveRecord(mass) {
+    localStorage.setItem('agario_best', Math.floor(mass));
+    localStorage.setItem('agario_best_date', new Date().toLocaleDateString('pt-BR'));
+}
+function tryUpdateRecord(mass) {
+    if (mass > currentRecord.mass) {
+        currentRecord.mass = Math.floor(mass);
+        currentRecord.date = new Date().toLocaleDateString('pt-BR');
+        saveRecord(mass);
+        return true;
+    }
+    return false;
+}
+function updateRecordHUD() {
+    const el = document.getElementById('rec-hud');
+    if (el) el.textContent = currentRecord.mass > 0 ? `🏆 Recorde: ${currentRecord.mass} (${currentRecord.date})` : '';
+}
+
+// ── Init ──
+function startGame() {
+    const name = document.getElementById('player-name').value.trim() || 'Jogador';
+    document.getElementById('start-screen').style.display = 'none';
+    init(name);
+}
+function restartGame() {
+    document.getElementById('death-screen').style.display = 'none';
+    cancelAnimationFrame(animId);
+    init(playerNameStr);
+}
+function init(name) {
+    playerNameStr = name;
+    playerColor   = pick(COLORS);
+    currentRecord = loadRecord();
+    updateRecordHUD();
+    const startMass = 300;
+    playerPieces = [new PlayerPiece(WORLD_W/2, WORLD_H/2, startMass, playerColor, name)];
+    food      = Array.from({length: FOOD_CNT}, (_, i) => new Food(i < FOOD_CNT * 0.12));
+    bots      = Array.from({length: BOT_CNT},   () => new Bot());
+    viruses   = Array.from({length: VIRUS_CNT}, () => new Virus());
+    redSpikes = Array.from({length: RSPIKE_CNT}, () => new RedSpike());
+    cam = { x: WORLD_W/2, y: WORLD_H/2, zoom: 1, tz: 1 };
+    mouse = { x: canvas.width/2, y: canvas.height/2 };
+    ejectCDTimer = 0; splitCDTimer = 0;
+    peakMass = startMass; newRecordFlash = 0;
+    gameRunning = true;
+    loop();
+}
+
+// ── Loop ──
+function loop() { update(); render(); if (gameRunning) animId = requestAnimationFrame(loop); }
+
+// ── Split ──
+function splitPlayer() {
+    if (splitCDTimer > 0) return;
+    const mw = mouseWorld();
+    const toAdd = [];
+    for (const piece of playerPieces) {
+        if (piece.mass < MIN_SPLIT_MASS) continue;
+        if (playerPieces.length + toAdd.length >= MAX_PIECES) break;
+        const dx = mw.x - piece.x, dy = mw.y - piece.y;
+        const d  = Math.sqrt(dx*dx + dy*dy) || 1;
+        const half = piece.mass / 2;
+        piece.mass = half; piece.r = massToRadius(half);
+        piece.mergeTimer = MERGE_FRAMES;
+        const np = new PlayerPiece(piece.x, piece.y, half, piece.color, piece.name);
+        np.vx = dx/d * SPLIT_SPD; np.vy = dy/d * SPLIT_SPD;
+        np.mergeTimer = MERGE_FRAMES;
+        toAdd.push(np);
+    }
+    if (toAdd.length > 0) { playerPieces.push(...toAdd); splitCDTimer = SPLIT_CD; }
+}
+
+// ── Eject Mass (W) ──
+function ejectMass() {
+    if (ejectCDTimer > 0) return;
+    const mw = mouseWorld();
+    for (const piece of playerPieces) {
+        if (piece.mass < 60) continue;
+        const dx = mw.x - piece.x, dy = mw.y - piece.y;
+        const d  = Math.sqrt(dx*dx + dy*dy) || 1;
+        piece.mass -= EJECT_MASS_AMT; piece.r = massToRadius(piece.mass);
+        const f = new Food(false);
+        f.x = clamp(piece.x + dx/d * (piece.r + 5), 20, WORLD_W-20);
+        f.y = clamp(piece.y + dy/d * (piece.r + 5), 20, WORLD_H-20);
+        f.mass = EJECT_MASS_AMT; f.r = massToRadius(EJECT_MASS_AMT);
+        f.color = piece.color;
+        f.vx = dx/d * EJECT_SPD; f.vy = dy/d * EJECT_SPD;
+        f.isEjected = true; f.noEatTimer = 20;
+        food.push(f);
+    }
+    ejectCDTimer = EJECT_CD;
+    if (food.length > FOOD_CNT + 400) food.splice(0, food.length - (FOOD_CNT + 300));
+}
+
+// ── Virus burst player piece ──
+function virusBurstPiece(piece, virus) {
+    virus.flashFrames = 20;
+    piece.virusCooldown = 120;
+    const slots   = MAX_PIECES - playerPieces.length;
+    const numNew  = Math.min(7, slots, Math.floor(piece.mass / 70) - 1);
+    if (numNew <= 0) { piece.mass *= 0.7; piece.r = massToRadius(piece.mass); return; }
+    const mpp = piece.mass / (numNew + 1);
+    piece.mass = mpp; piece.r = massToRadius(mpp); piece.mergeTimer = MERGE_FRAMES;
+    for (let i = 0; i < numNew; i++) {
+        const angle = (i / numNew) * Math.PI * 2;
+        const np = new PlayerPiece(piece.x, piece.y, mpp, piece.color, piece.name);
+        np.vx = Math.cos(angle) * SPLIT_SPD * 1.8;
+        np.vy = Math.sin(angle) * SPLIT_SPD * 1.8;
+        np.mergeTimer = MERGE_FRAMES; np.virusCooldown = 120;
+        playerPieces.push(np);
+    }
+}
+
+// ── Update ──
+function update() {
+    if (ejectCDTimer > 0) ejectCDTimer--;
+    if (splitCDTimer > 0) splitCDTimer--;
+    if (wKeyHeld) ejectMass();
+
+    // ── Move player pieces ──
+    const mw = mouseWorld();
+    for (const p of playerPieces) {
+        if (Math.abs(p.vx) > 0.05 || Math.abs(p.vy) > 0.05) {
+            p.x += p.vx; p.y += p.vy; p.vx *= 0.86; p.vy *= 0.86;
+        }
+        const dx = mw.x - p.x, dy = mw.y - p.y;
+        const d  = Math.sqrt(dx*dx + dy*dy) || 1;
+        if (d > p.r * 0.4) {
+            const factor = clamp(d / (p.r * 2 + 80), 0.05, 1);
+            p.x += dx/d * p.speed * factor;
+            p.y += dy/d * p.speed * factor;
+        }
+        p.x = clamp(p.x, p.r, WORLD_W - p.r);
+        p.y = clamp(p.y, p.r, WORLD_H - p.r);
+        if (p.mergeTimer > 0) p.mergeTimer--;
+        if (p.virusCooldown > 0) p.virusCooldown--;
+    }
+
+    // ── Separate overlapping own pieces ──
+    for (let i = 0; i < playerPieces.length; i++) {
+        for (let j = i + 1; j < playerPieces.length; j++) {
+            const a = playerPieces[i], b = playerPieces[j];
+            if (a.mergeTimer === 0 && b.mergeTimer === 0) continue;
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const d  = Math.sqrt(dx*dx + dy*dy) || 0.1;
+            const minD = a.r + b.r;
+            if (d < minD) {
+                const push = (minD - d) / 2 * 0.28;
+                a.x -= dx/d * push; a.y -= dy/d * push;
+                b.x += dx/d * push; b.y += dy/d * push;
+            }
+        }
+    }
+
+    // ── Merge pieces ──
+    for (let i = playerPieces.length - 1; i >= 1; i--) {
+        for (let j = i - 1; j >= 0; j--) {
+            const a = playerPieces[i], b = playerPieces[j];
+            if (a.mergeTimer > 0 || b.mergeTimer > 0) continue;
+            if (dist(a, b) < Math.max(a.r, b.r)) {
+                b.mass += a.mass; b.r = massToRadius(b.mass);
+                playerPieces.splice(i, 1); break;
+            }
+        }
+    }
+
+    // ── Update ejected food ──
+    for (const f of food) {
+        if (f.noEatTimer > 0) f.noEatTimer--;
+        if (f.isEjected && (Math.abs(f.vx) > 0.1 || Math.abs(f.vy) > 0.1)) {
+            f.x += f.vx; f.y += f.vy; f.vx *= 0.88; f.vy *= 0.88;
+            f.x = clamp(f.x, 20, WORLD_W-20); f.y = clamp(f.y, 20, WORLD_H-20);
+        }
+    }
+
+    // ── Player eats food ──
+    for (const p of playerPieces) {
+        for (const f of food) {
+            if (f.noEatTimer > 0) continue;
+            if (dist2(p, f) < p.r * p.r) {
+                p.addMass(f.mass);
+                f.respawn(Math.random() < 0.12);
+            }
+        }
+    }
+
+    // ── Player hits virus ── (collect first, then burst to avoid iteration issues)
+    const bursts = [];
+    for (const p of playerPieces) {
+        if (p.r <= VIRUS_SPLIT_R || p.virusCooldown > 0) continue; // small: safe
+        for (const v of viruses) {
+            if (dist(p, v) < p.r + v.r * 0.55) { bursts.push([p, v]); p.virusCooldown = 120; break; }
+        }
+    }
+    for (const [p, v] of bursts) virusBurstPiece(p, v);
+
+    // ── Red spikes ──
+    for (const rs of redSpikes) rs.update();
+
+    // ── Bots ──
+    const allCells = [...playerPieces, ...bots];
+    for (let i = bots.length - 1; i >= 0; i--) {
+        const bot = bots[i];
+        bot.think(allCells);
+        bot.move();
+        if (bot.virusCooldown > 0) bot.virusCooldown--;
+
+        // Bot eats food
+        for (const f of food) {
+            if (f.noEatTimer > 0) continue;
+            if (dist2(bot, f) < bot.r * bot.r) { bot.addMass(f.mass); f.respawn(Math.random() < 0.12); }
+        }
+
+        // Bot hits virus
+        if (bot.r > VIRUS_SPLIT_R && bot.virusCooldown === 0) {
+            for (const v of viruses) {
+                if (dist(bot, v) < bot.r + v.r * 0.5) {
+                    bot.mass *= 0.65; bot.r = massToRadius(bot.mass);
+                    bot.virusCooldown = 90; v.flashFrames = 12; break;
+                }
+            }
+        }
+
+        // Player piece eats bot / bot eats player piece
+        let botEaten = false;
+        for (let pi = playerPieces.length - 1; pi >= 0; pi--) {
+            const piece = playerPieces[pi];
+            if (piece.r > bot.r * 1.15 && dist(piece, bot) < piece.r + bot.r * 0.4) {
+                piece.addMass(bot.mass * 0.8);
+                bots.splice(i, 1); scheduleRespawnBot(); botEaten = true; break;
+            }
+            if (bot.r > piece.r * 1.15 && dist(bot, piece) < bot.r + piece.r * 0.4) {
+                bot.addMass(piece.mass * 0.8);
+                if (playerPieces.length === 1) { gameOver(); return; }
+                playerPieces.splice(pi, 1);
+            }
+        }
+        if (botEaten) continue;
+    }
+
+    // ── Bot eats bot ──
+    for (let i = bots.length - 1; i >= 0; i--) {
+        for (let j = i - 1; j >= 0; j--) {
+            if (i >= bots.length || j >= bots.length) continue;
+            const a = bots[i], b = bots[j];
+            if      (a.canEat(b)) { a.addMass(b.mass*0.8); bots.splice(j,1); scheduleRespawnBot(); break; }
+            else if (b.canEat(a)) { b.addMass(a.mass*0.8); bots.splice(i,1); scheduleRespawnBot(); break; }
+        }
+    }
+
+    // ── Camera ──
+    const cen = playerCentroid();
+    cam.x += (cen.x - cam.x) * 0.08;
+    cam.y += (cen.y - cam.y) * 0.08;
+    let maxSpan = 0;
+    for (const p of playerPieces) { const d = dist({x:cen.x,y:cen.y}, p) + p.r; if (d > maxSpan) maxSpan = d; }
+    maxSpan = Math.max(maxSpan, 30);
+    const tz = clamp(Math.min(canvas.width, canvas.height) * 0.38 / maxSpan, 0.15, 1.4);
+    cam.zoom += (tz - cam.zoom) * 0.05;
+
+    // ── HUD / Record ──
+    const total = cen.totalMass;
+    if (total > peakMass) {
+        peakMass = total;
+        if (tryUpdateRecord(peakMass)) { newRecordFlash = 200; updateRecordHUD(); }
+    }
+    if (newRecordFlash > 0) newRecordFlash--;
+    document.getElementById('score').textContent = Math.floor(total);
+    const pi = document.getElementById('pieces-info');
+    pi.textContent = playerPieces.length > 1 ? ` | ${playerPieces.length} células` : '';
+    updateLeaderboard(total);
+}
+
+function scheduleRespawnBot() {
+    setTimeout(() => { if (gameRunning) bots.push(new Bot()); }, 4000);
+}
+
+function gameOver() {
+    gameRunning = false;
+    tryUpdateRecord(peakMass);
+    const rec = loadRecord();
+    document.getElementById('final-score').textContent = Math.floor(peakMass);
+    const isNew = Math.floor(peakMass) >= rec.mass;
+    document.getElementById('record-msg').innerHTML = isNew
+        ? '<span style="color:#ffd700;font-size:22px">🏆 NOVO RECORDE PESSOAL!</span>'
+        : `Recorde pessoal: <strong>${rec.mass}</strong> (${rec.date})`;
+    document.getElementById('death-screen').style.display = 'flex';
+}
+
+// ── Render ──
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#f2f2ec'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawGrid();
+    drawBorder();
+    for (const f of food) f.draw();
+    for (const rs of redSpikes) rs.draw();
+    for (const v of viruses) v.draw();
+    bots.slice().sort((a,b) => a.r-b.r).forEach(b => b.draw());
+    // Draw player pieces smallest first, then show name only on largest
+    const sorted = playerPieces.slice().sort((a,b) => a.r-b.r);
+    const largest = playerPieces.reduce((mx, p) => p.r > mx.r ? p : mx, playerPieces[0]);
+    for (const p of sorted) p.draw(p === largest);
+    drawMinimap();
+    // New record flash
+    if (newRecordFlash > 0) {
+        const alpha = Math.min(1, newRecordFlash / 50);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = 'bold 38px Arial';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 5;
+        ctx.strokeText('🏆 NOVO RECORDE!', canvas.width/2, canvas.height * 0.3);
+        ctx.fillStyle = '#ffd700';
+        ctx.fillText('🏆 NOVO RECORDE!', canvas.width/2, canvas.height * 0.3);
+        ctx.restore();
+    }
+}
+
+function drawGrid() {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(190,190,180,0.55)'; ctx.lineWidth = 1;
+    const left   = cam.x - canvas.width  / (2*cam.zoom);
+    const top    = cam.y - canvas.height / (2*cam.zoom);
+    const startX = Math.floor(left / GRID_SZ) * GRID_SZ;
+    const startY = Math.floor(top  / GRID_SZ) * GRID_SZ;
+    const endX   = left + canvas.width  / cam.zoom + GRID_SZ;
+    const endY   = top  + canvas.height / cam.zoom + GRID_SZ;
+    for (let wx = startX; wx < endX; wx += GRID_SZ) {
+        const sx = (wx - cam.x) * cam.zoom + canvas.width * 0.5;
+        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, canvas.height); ctx.stroke();
+    }
+    for (let wy = startY; wy < endY; wy += GRID_SZ) {
+        const sy = (wy - cam.y) * cam.zoom + canvas.height * 0.5;
+        ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(canvas.width, sy); ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawBorder() {
+    const [bx, by] = worldToScreen(0, 0);
+    const bw = WORLD_W * cam.zoom, bh = WORLD_H * cam.zoom;
+    ctx.save();
+    ctx.fillStyle = 'rgba(160,160,160,0.28)';
+    if (bx > 0)             ctx.fillRect(0, 0, bx, canvas.height);
+    if (bx+bw < canvas.width)  ctx.fillRect(bx+bw, 0, canvas.width-bx-bw, canvas.height);
+    if (by > 0)             ctx.fillRect(bx, 0, bw, by);
+    if (by+bh < canvas.height) ctx.fillRect(bx, by+bh, bw, canvas.height-by-bh);
+    ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 3;
+    ctx.strokeRect(bx, by, bw, bh);
+    ctx.restore();
+}
+
+function drawMinimap() {
+    const MW = 190, MH = 190, PAD = 12;
+    const MX = PAD, MY = canvas.height - MH - PAD;
+    const SX = MW / WORLD_W, SY = MH / WORLD_H;
+    ctx.save();
+    // Panel
+    ctx.fillStyle = 'rgba(0,0,0,0.52)';
+    ctx.beginPath(); ctx.roundRect(MX-6, MY-20, MW+12, MH+26, 8); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.font = 'bold 11px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('MINIMAPA', MX, MY - 16);
+    // Clip
+    ctx.beginPath(); ctx.rect(MX, MY, MW, MH); ctx.clip();
+    ctx.fillStyle = '#d6d6ce'; ctx.fillRect(MX, MY, MW, MH);
+    // Coarse grid
+    ctx.strokeStyle = 'rgba(160,160,150,0.35)'; ctx.lineWidth = 0.5;
+    for (let wx = 0; wx <= WORLD_W; wx += 600) {
+        const sx = MX + wx*SX;
+        ctx.beginPath(); ctx.moveTo(sx, MY); ctx.lineTo(sx, MY+MH); ctx.stroke();
+    }
+    for (let wy = 0; wy <= WORLD_H; wy += 600) {
+        const sy = MY + wy*SY;
+        ctx.beginPath(); ctx.moveTo(MX, sy); ctx.lineTo(MX+MW, sy); ctx.stroke();
+    }
+    // Food (every 3rd for perf)
+    for (let i = 0; i < food.length; i += 3) {
+        const f = food[i];
+        ctx.fillStyle = f.color;
+        ctx.fillRect(MX + f.x*SX - 1, MY + f.y*SY - 1, 2, 2);
+    }
+    // Red spikes
+    for (const rs of redSpikes) {
+        ctx.fillStyle = '#cc2222';
+        ctx.beginPath(); ctx.arc(MX+rs.x*SX, MY+rs.y*SY, 4, 0, Math.PI*2); ctx.fill();
+    }
+    // Viruses
+    ctx.fillStyle = '#2ec827';
+    for (const v of viruses) {
+        ctx.beginPath(); ctx.arc(MX+v.x*SX, MY+v.y*SY, 3.5, 0, Math.PI*2); ctx.fill();
+    }
+    // Bots
+    for (const b of bots) {
+        ctx.fillStyle = b.color;
+        ctx.beginPath(); ctx.arc(MX+b.x*SX, MY+b.y*SY, Math.max(2,b.r*SX*0.8), 0, Math.PI*2); ctx.fill();
+    }
+    // Viewport rect
+    const vL = cam.x - canvas.width/(2*cam.zoom), vT = cam.y - canvas.height/(2*cam.zoom);
+    const vW = canvas.width/cam.zoom, vH = canvas.height/cam.zoom;
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1;
+    ctx.setLineDash([3,3]);
+    ctx.strokeRect(MX+vL*SX, MY+vT*SY, vW*SX, vH*SY);
+    ctx.setLineDash([]);
+    // Player pieces
+    for (const p of playerPieces) {
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(MX+p.x*SX, MY+p.y*SY, Math.max(4,p.r*SX*0.9), 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = 'white'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    // Border
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1;
+    ctx.strokeRect(MX, MY, MW, MH);
+    ctx.restore();
+}
+
+function updateLeaderboard(totalMass) {
+    const entries = [
+        { name: playerNameStr, mass: totalMass, me: true },
+        ...bots.map(b => ({ name: b.name, mass: b.mass, me: false }))
+    ].sort((a, b) => b.mass - a.mass).slice(0, 10);
+    document.getElementById('lb-list').innerHTML = entries.map((e, i) =>
+        `<div class="lb-entry${e.me?' me':''}">
+            <span>${i+1}. ${e.name}</span><span>${Math.floor(e.mass)}</span>
+        </div>`
+    ).join('');
+}
+
+// ── Resize ──
+function resize() {
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+    if (mouse && gameRunning) { mouse.x = canvas.width*0.5; mouse.y = canvas.height*0.5; }
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── Events ──
+canvas.addEventListener('mousemove', e => { if (mouse) { mouse.x = e.clientX; mouse.y = e.clientY; } });
+
+canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    const t = e.touches[0];
+    if (mouse) { mouse.x = t.clientX; mouse.y = t.clientY; }
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+    if (!gameRunning) return;
+    if (e.code === 'Space') { e.preventDefault(); splitPlayer(); }
+    if (e.code === 'KeyW')  { e.preventDefault(); wKeyHeld = true; }
+});
+window.addEventListener('keyup', e => {
+    if (e.code === 'KeyW') wKeyHeld = false;
+});
+</script>
+</body>
+</html>
