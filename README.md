@@ -6,11 +6,11 @@
 
 ## Video no YouTube
 
-[Assista ao video aqui — LINK DO VIDEO](https://www.youtube.com/SEU_LINK_AQUI)
+[Assista ao video aqui](https://www.youtube.com/@vitor.menoli)
 
 ## Jogar Online
 
-[Clique aqui para jogar — LINK DO GITHUB PAGES](https://SEU_USUARIO.github.io/SEU_REPO)
+[Clique aqui para jogar](https://vitormenoli.github.io/Agario-Claude-Code/)
 
 ---
 
@@ -71,4 +71,4 @@ open index.html    # macOS
 ## Canal
 
 Inscreva-se no canal **Vitor Menoli** para mais videos de programacao:
-[youtube.com/@vitormenoli](https://www.youtube.com/@vitormenoli)
+[youtube.com/@vitor.menoli](https://www.youtube.com/@vitor.menoli)
