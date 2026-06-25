@@ -6,7 +6,7 @@
 
 ## Video no YouTube
 
-[Assista ao video aqui](https://www.youtube.com/@vitor.menoli)
+[Assista ao video aqui](https://youtu.be/8B3jIi2lFt4)
 
 ## Jogar Online
 
